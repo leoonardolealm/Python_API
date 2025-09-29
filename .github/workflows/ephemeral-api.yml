@@ -1,0 +1,61 @@
+name: Ephemeral API (1h)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  run-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Start API (background)
+        run: |
+          uvicorn main:app --host 0.0.0.0 --port 8000 & echo $! > uvicorn.pid
+          sleep 3
+          ps -p $(cat uvicorn.pid) || (echo "Uvicorn failed" && exit 1)
+
+      - name: Download cloudflared
+        run: |
+          curl -sSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+
+      - name: Start tunnel to 8000 (background) and print public URL
+        run: |
+          ./cloudflared tunnel --url http://localhost:8000 --no-autoupdate > tunnel.log 2>&1 &
+          for i in {1..30}; do
+            URL=$(grep -o 'https://[^ ]*trycloudflare.com' -m 1 tunnel.log || true)
+            if [ -n "$URL" ]; then
+              echo "PUBLIC_URL=$URL" | tee public_url.txt
+              echo "OpenAPI docs: $URL/docs"
+              break
+            fi
+            sleep 2
+          done
+          test -s public_url.txt || (echo "No tunnel URL found" && tail -n +1 tunnel.log && exit 1)
+
+      - name: Keep alive for 60 minutes
+        run: |
+          echo "API is up for ~60 minutes."
+          echo "Hit: $(cat public_url.txt | cut -d= -f2)/clean"
+          sleep 3600
+
+      - name: Stop services
+        if: always()
+        run: |
+          kill $(cat uvicorn.pid) 2>/dev/null || true
+          pkill -f cloudflared 2>/dev/null || true
+          echo "Stopped."
