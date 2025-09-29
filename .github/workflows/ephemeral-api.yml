@@ -1,4 +1,4 @@
-name: Ephemeral API (1h)
+name: Ephemeral API (1h with fallback)
 
 on:
   workflow_dispatch: {}
@@ -6,7 +6,7 @@ on:
 jobs:
   run-api:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
@@ -24,33 +24,80 @@ jobs:
 
       - name: Start API (background)
         run: |
-          uvicorn main:app --host 0.0.0.0 --port 8000 & echo $! > uvicorn.pid
+          uvicorn main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 &
+          echo $! > uvicorn.pid
           sleep 3
-          ps -p $(cat uvicorn.pid) || (echo "Uvicorn failed" && exit 1)
+          ps -p $(cat uvicorn.pid) || (echo "Uvicorn failed"; tail -n+1 uvicorn.log; exit 1)
 
+      # ---------- Attempt 1: Cloudflare Quick Tunnel with retries ----------
       - name: Download cloudflared
         run: |
           curl -sSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
 
-      - name: Start tunnel to 8000 (background) and print public URL
+      - name: Start Cloudflare tunnel (retry up to 5x)
+        id: cftunnel
+        continue-on-error: true
         run: |
-          ./cloudflared tunnel --url http://localhost:8000 --no-autoupdate > tunnel.log 2>&1 &
-          for i in {1..30}; do
-            URL=$(grep -o 'https://[^ ]*trycloudflare.com' -m 1 tunnel.log || true)
+          set -e
+          ATTEMPTS=5
+          for i in $(seq 1 $ATTEMPTS); do
+            echo "Attempt $i/$ATTEMPTS to start Cloudflare quick tunnel..."
+            ./cloudflared tunnel --url http://localhost:8000 --no-autoupdate > tunnel.log 2>&1 &
+            TPID=$!
+            # Wait up to ~20s for the URL to show up
+            for j in $(seq 1 20); do
+              URL=$(grep -o 'https://[^ ]*trycloudflare.com' -m 1 tunnel.log || true)
+              if [ -n "$URL" ]; then
+                echo "PUBLIC_URL=$URL" | tee public_url.txt
+                echo "OpenAPI docs: $URL/docs"
+                echo "ok" > cftunnel_ok.flag
+                break
+              fi
+              # If cloudflared died, break early
+              kill -0 $TPID 2>/dev/null || break
+              sleep 1
+            done
+            # success?
+            if [ -f cftunnel_ok.flag ]; then
+              exit 0
+            fi
+            echo "Cloudflare attempt $i failed; logs:"
+            tail -n 50 tunnel.log || true
+            # clean up process if still running
+            kill $TPID 2>/dev/null || true
+            sleep 2
+          done
+          exit 1
+
+      # ---------- Fallback: LocalTunnel (no account) ----------
+      - name: Setup Node (for LocalTunnel)
+        if: steps.cftunnel.outcome == 'failure'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Start LocalTunnel fallback
+        if: steps.cftunnel.outcome == 'failure'
+        run: |
+          npx --yes localtunnel@2 --port 8000 > lt.log 2>&1 &
+          # Wait up to ~20s for the loca.lt URL
+          for i in $(seq 1 20); do
+            URL=$(grep -o 'https://[^ ]*\.loca\.lt' -m 1 lt.log || true)
             if [ -n "$URL" ]; then
               echo "PUBLIC_URL=$URL" | tee public_url.txt
               echo "OpenAPI docs: $URL/docs"
               break
             fi
-            sleep 2
+            sleep 1
           done
-          test -s public_url.txt || (echo "No tunnel URL found" && tail -n +1 tunnel.log && exit 1)
+          test -s public_url.txt || (echo "LocalTunnel did not provide a URL"; tail -n +1 lt.log; exit 1)
 
+      # ---------- Keep alive ----------
       - name: Keep alive for 60 minutes
         run: |
           echo "API is up for ~60 minutes."
-          echo "Hit: $(cat public_url.txt | cut -d= -f2)/clean"
+          echo "Hit: $(cut -d= -f2 public_url.txt)/clean"
           sleep 3600
 
       - name: Stop services
@@ -58,4 +105,5 @@ jobs:
         run: |
           kill $(cat uvicorn.pid) 2>/dev/null || true
           pkill -f cloudflared 2>/dev/null || true
+          pkill -f localtunnel 2>/dev/null || true
           echo "Stopped."
