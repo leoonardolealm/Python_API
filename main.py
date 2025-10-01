@@ -209,5 +209,4 @@ def clean_data(payload: Dict[str, Any] = Body(..., example=ExampleBody)):
         "duplicates_removed": removed,  # Number of duplicates removed.
         "groups": groups,  # Group-by results (empty if none requested).
         "data": df.to_dicts(),  # Full cleaned rows as a list of dicts.
-        "sample_ids": df.select("hash_id").head(3).to_series().to_list()  # First 3 hash_ids as a quick sample.
     }
