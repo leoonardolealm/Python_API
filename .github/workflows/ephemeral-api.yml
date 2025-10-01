@@ -18,7 +18,7 @@ on:                                      # Triggers that start this workflow.
       minutes:                           # Input name (string). We use it for display/timebox elsewhere if needed.
         description: 'How long to keep the API alive'     # UI help text.
         type: choice                     # Limit allowed values to a predefined set (safe parsing).
-        options: [ '5','10','15','30','45','60','90','120','180','240','300','340' ]  # Valid minute choices.
+        options: [ '5','10','15','30','45','60','90','120','180','240','300','360' ]  # Valid minute choices.
         default: '60'                    # Default selection if the user doesn't choose one.
 
 jobs:                                    # A workflow is composed of one or more jobs.
@@ -26,7 +26,7 @@ jobs:                                    # A workflow is composed of one or more
     runs-on: ubuntu-latest               # Use GitHub's hosted Ubuntu runner image.
     # Give enough headroom so the job doesn't hit the hard 6h cap when the user selects 340.
     # We compute: timeout = selected minutes + 20 extra minutes (setup/teardown cushion).
-    timeout-minutes: ${{ fromJSON(inputs.minutes) + 20 }}  # Job-level hard timeout (runner will abort after this).
+    timeout-minutes: ${{ fromJSON(inputs.minutes) }}  # Job-level hard timeout (runner will abort after this).
 
     steps:                                # Ordered list of steps executed in the same runner (same filesystem).
       - name: Checkout
