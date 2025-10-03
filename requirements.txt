@@ -1,3 +1,0 @@
-fastapi
-uvicorn
-polars==1.33.1
